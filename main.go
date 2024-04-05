@@ -129,22 +129,16 @@ func main() {
 	// Define command line flags
 	detail := flag.Int("detail", 77, "Set how often to print a status message (default 77 files)")
 	maxMB := flag.Int("maxmb", 0, "Set the maximum file size in megabytes (default 0 for no limit)")
+	path := flag.String("path", ".", "Set the path to scan (default current directory)")
 
 	flag.Parse()
-
-	var path string
-	if len(os.Args) > 1 {
-		path = os.Args[1]
-	} else {
-		path, _ = os.Getwd()
-	}
 
 	options := ScanOptions{
 		MaxMB:  *maxMB,
 		Detail: *detail,
 	}
 
-	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(path, options)
+	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(*path, options)
 
 	for dupe := range duplicateList {
 		fmt.Printf("Duplicate files found for %s:\n", dupe)
