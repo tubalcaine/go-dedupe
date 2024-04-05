@@ -81,7 +81,10 @@ func scanFiles(path string, options ScanOptions) (map[string][]map[string]interf
 		}
 
 		elapsedTime := time.Since(startTime)
-		log.Printf("File processed in %s\n\n", elapsedTime)
+
+		if fileSize > 4*1024*1024*1024 {
+			log.Printf("File processed in %s\n\n", elapsedTime)
+		}
 
 		key := fmt.Sprintf("%d:%s", fileSize, fileHash)
 		fileInfo := map[string]interface{}{
