@@ -11,7 +11,7 @@ import (
 )
 
 /*
-pyDedupe.go
+dedup.go
 
 A command line tool to identify duplicate files based on
 size and md5 hash value.
