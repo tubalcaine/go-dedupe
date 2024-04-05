@@ -60,7 +60,7 @@ func scanFiles(path string, options ScanOptions) (map[string][]map[string]interf
 
 		// Skip large files
 		if int64(options.MaxMB) > 0 && fileSize > int64(options.MaxMB)*1024*1024 {
-			log.Printf("Skipping VERY large %.2fMB file: %s\n", float64(options.MaxMB)/(1024*1024), filePath)
+			log.Printf("Skipping VERY large %.2fMB file: %s\n", float64(fileSize)/(1024*1024), filePath)
 			largeFiles = append(largeFiles, filePath)
 			return nil
 		}
