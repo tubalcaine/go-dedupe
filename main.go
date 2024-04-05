@@ -18,6 +18,9 @@ A command line tool to identify duplicate files based on
 size and md5 hash value.
 */
 
+// ScanOptions defines the max file size to calculate the MD5 hash
+// and the frequency to print a status message. Default max is "0"
+// for no limit and default detail is "77" files.
 type ScanOptions struct {
 	MaxMB  int
 	Detail int
