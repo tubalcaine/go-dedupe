@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/md5"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -17,34 +18,16 @@ A command line tool to identify duplicate files based on
 size and md5 hash value.
 */
 
-func main() {
-	startTime := time.Now()
-
-	var path string
-	if len(os.Args) > 1 {
-		path = os.Args[1]
-	} else {
-		path, _ = os.Getwd()
-	}
-
-	fileDict, duplicateList := scanFiles(path, 77)
-
-	for dupe := range duplicateList {
-		fmt.Printf("Duplicate files found for %s:\n", dupe)
-		for _, file := range fileDict[dupe] {
-			fmt.Printf("  %s\n", file["name"])
-		}
-	}
-
-	fmt.Println("\nDone.")
-
-	elapsedTime := time.Since(startTime)
-	fmt.Printf("Total run time: %s\n", elapsedTime)
+type ScanOptions struct {
+	MaxMB  int
+	Detail int
 }
 
-func scanFiles(path string, detail int) (map[string][]map[string]interface{}, map[string]bool) {
+func scanFiles(path string, options ScanOptions) (map[string][]map[string]interface{}, map[string]bool, []string, []string) {
 	duplicateList := make(map[string]bool)
 	fileDict := make(map[string][]map[string]interface{})
+	zeroLengthFiles := make([]string, 0)
+	largeFiles := make([]string, 0)
 
 	count := 0
 
@@ -60,7 +43,7 @@ func scanFiles(path string, detail int) (map[string][]map[string]interface{}, ma
 		}
 
 		count++
-		if detail > 0 && count%detail == 0 {
+		if options.Detail > 0 && count%options.Detail == 0 {
 			log.Printf("Processed %d files...\r", count)
 		}
 
@@ -68,15 +51,23 @@ func scanFiles(path string, detail int) (map[string][]map[string]interface{}, ma
 
 		// Skip empty files
 		if fileSize == 0 {
+			zeroLengthFiles = append(zeroLengthFiles, filePath)
 			return nil
 		}
 
-		startTime := time.Now()
-
-		// Report large files
-		if fileSize > 1024*1024*1024 {
-			log.Printf("\nProcessing large (%dMB) file: %s\n", fileSize/(1024*1024), filePath)
+		// Skip large files
+		if int64(options.MaxMB) > 0 && fileSize > int64(options.MaxMB)*1024*1024 {
+			log.Printf("Skipping VERY large %.2fMB file: %s\n", float64(options.MaxMB)/(1024*1024), filePath)
+			largeFiles = append(largeFiles, filePath)
+			return nil
 		}
+
+		// Warn of files larger than 4GB
+		if fileSize > 4*1024*1024*1024 {
+			fmt.Fprintf(os.Stderr, "Processing large (%.2f MB) file: %s\n", float64(fileSize)/(1024*1024), filePath)
+		}
+
+		startTime := time.Now()
 
 		fileHash, err := getMD5Hash(filePath)
 
@@ -86,10 +77,8 @@ func scanFiles(path string, detail int) (map[string][]map[string]interface{}, ma
 			return nil
 		}
 
-		if fileSize > 1024*1024*1024 {
-			elapsedTime := time.Since(startTime)
-			log.Printf("File processed in %s\n\n", elapsedTime)
-		}
+		elapsedTime := time.Since(startTime)
+		log.Printf("File processed in %s\n\n", elapsedTime)
 
 		key := fmt.Sprintf("%d:%s", fileSize, fileHash)
 		fileInfo := map[string]interface{}{
@@ -113,7 +102,7 @@ func scanFiles(path string, detail int) (map[string][]map[string]interface{}, ma
 		log.Printf("Error scanning files: %s\n", err.Error())
 	}
 
-	return fileDict, duplicateList
+	return fileDict, duplicateList, zeroLengthFiles, largeFiles
 }
 
 func getMD5Hash(filePath string) (string, error) {
@@ -129,4 +118,52 @@ func getMD5Hash(filePath string) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+func main() {
+	startTime := time.Now()
+
+	// Define command line flags
+	detail := flag.Int("detail", 77, "Set how often to print a status message (default 77 files)")
+	maxMB := flag.Int("maxmb", 0, "Set the maximum file size in megabytes (default 0 for no limit)")
+
+	flag.Parse()
+
+	var path string
+	if len(os.Args) > 1 {
+		path = os.Args[1]
+	} else {
+		path, _ = os.Getwd()
+	}
+
+	options := ScanOptions{
+		MaxMB:  *maxMB,
+		Detail: *detail,
+	}
+
+	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(path, options)
+
+	for dupe := range duplicateList {
+		fmt.Printf("Duplicate files found for %s:\n", dupe)
+		for _, file := range fileDict[dupe] {
+			fmt.Printf("  %s\n", file["name"])
+		}
+	}
+
+	fmt.Println("\nZero length files:")
+
+	for _, file := range zeroLengthFiles {
+		fmt.Printf("  %s\n", file)
+	}
+
+	fmt.Println("\nOversize files:")
+
+	for _, file := range oversizeFiles {
+		fmt.Printf("  %s\n", file)
+	}
+
+	fmt.Println("\nDone.")
+
+	elapsedTime := time.Since(startTime)
+	fmt.Printf("Total run time: %s\n", elapsedTime)
 }
