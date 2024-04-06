@@ -47,7 +47,7 @@ func scanFiles(path string, options ScanOptions) (map[string][]map[string]interf
 
 		count++
 		if options.Detail > 0 && count%options.Detail == 0 {
-			log.Printf("Processed %d files...\r", count)
+			log.Printf("Processed %d files.\t%s\r", count, filepath.Dir(filePath))
 		}
 
 		fileSize := info.Size()
