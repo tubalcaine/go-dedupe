@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -22,8 +23,9 @@ size and md5 hash value.
 // and the frequency to print a status message. Default max is "0"
 // for no limit and default detail is "77" files.
 type ScanOptions struct {
-	MaxMB  int
-	Detail int
+	MaxMB          int
+	Detail         int
+	MaxQueueLength int
 }
 
 func scanFiles(path string, options ScanOptions) (map[string][]map[string]interface{}, map[string]bool, []string, []string) {
@@ -33,6 +35,9 @@ func scanFiles(path string, options ScanOptions) (map[string][]map[string]interf
 	largeFiles := make([]string, 0)
 
 	count := 0
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	md5Queue := make(chan struct{}, options.MaxQueueLength)
 
 	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -70,39 +75,49 @@ func scanFiles(path string, options ScanOptions) (map[string][]map[string]interf
 			fmt.Fprintf(os.Stderr, "Processing large (%.2f MB) file: %s\n", float64(fileSize)/(1024*1024), filePath)
 		}
 
-		startTime := time.Now()
+		wg.Add(1)
+		md5Queue <- struct{}{} // Add to the queue
 
-		fileHash, err := getMD5Hash(filePath)
+		go func(filePath string, fileSize int64) {
+			defer wg.Done()
+			defer func() { <-md5Queue }() // Remove from the queue
 
-		if err != nil {
-			log.Printf("\nError processing file: %s\n", filePath)
-			log.Printf("Exception: %s\n", err.Error())
-			return nil
-		}
+			startTime := time.Now()
 
-		elapsedTime := time.Since(startTime)
+			fileHash, err := getMD5Hash(filePath)
+			if err != nil {
+				log.Printf("\nError processing file: %s\n", filePath)
+				log.Printf("Exception: %s\n", err.Error())
+				return
+			}
 
-		if fileSize > 4*1024*1024*1024 {
-			log.Printf("File processed in %s\n\n", elapsedTime)
-		}
+			elapsedTime := time.Since(startTime)
+			if fileSize > 4*1024*1024*1024 {
+				log.Printf("File processed in %s\n\n", elapsedTime)
+			}
 
-		key := fmt.Sprintf("%d:%s", fileSize, fileHash)
-		fileInfo := map[string]interface{}{
-			"name":     filePath,
-			"size":     fileSize,
-			"md5_hash": fileHash,
-			"key":      key,
-		}
+			key := fmt.Sprintf("%d:%s", fileSize, fileHash)
+			fileInfo := map[string]interface{}{
+				"name":     filePath,
+				"size":     fileSize,
+				"md5_hash": fileHash,
+				"key":      key,
+			}
 
-		if _, ok := fileDict[key]; ok {
-			fileDict[key] = append(fileDict[key], fileInfo)
-			duplicateList[key] = true
-		} else {
-			fileDict[key] = []map[string]interface{}{fileInfo}
-		}
+			mu.Lock()
+			defer mu.Unlock()
+			if _, ok := fileDict[key]; ok {
+				fileDict[key] = append(fileDict[key], fileInfo)
+				duplicateList[key] = true
+			} else {
+				fileDict[key] = []map[string]interface{}{fileInfo}
+			}
+		}(filePath, fileSize)
 
 		return nil
 	})
+
+	wg.Wait() // Wait for all goroutines to finish
 
 	if err != nil {
 		log.Printf("Error scanning files: %s\n", err.Error())
@@ -132,13 +147,15 @@ func main() {
 	// Define command line flags
 	detail := flag.Int("detail", 77, "Set how often to print a status message (default 77 files)")
 	maxMB := flag.Int("maxmb", 0, "Set the maximum file size in megabytes (default 0 for no limit)")
+	maxQueueLength := flag.Int("maxQueueLength", 5, "Set the maximum number of concurrent MD5 calculations")
 	path := flag.String("path", ".", "Set the path to scan (default current directory)")
 
 	flag.Parse()
 
 	options := ScanOptions{
-		MaxMB:  *maxMB,
-		Detail: *detail,
+		MaxMB:          *maxMB,
+		Detail:         *detail,
+		MaxQueueLength: *maxQueueLength,
 	}
 
 	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(*path, options)
