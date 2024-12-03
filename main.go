@@ -1,3 +1,19 @@
+// Package main implements a command line tool to identify duplicate files based on
+// size and MD5 hash value. It provides options to limit the maximum file size for
+// MD5 calculation and the frequency of status messages.
+//
+// ScanOptions defines the maximum file size to calculate the MD5 hash, the frequency
+// to print a status message, and the maximum length of the MD5 calculation queue.
+//
+// scanFiles scans the specified directory for files, calculates their MD5 hash, and
+// identifies duplicate files. It returns a dictionary of files, a list of duplicates,
+// zero-length files, and files that exceed the maximum size.
+//
+// getMD5Hash calculates the MD5 hash of a given file and returns it as a string.
+//
+// The main function parses command line flags, sets up scan options, and initiates
+// the file scanning process. It prints the results, including duplicate files,
+// zero-length files, and oversized files, and displays the total run time.
 package main
 
 import (
@@ -28,7 +44,7 @@ type ScanOptions struct {
 	MaxQueueLength int
 }
 
-func scanFiles(path string, options ScanOptions) (map[string][]map[string]interface{}, map[string]bool, []string, []string) {
+func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]map[string]interface{}, map[string]bool, []string, []string) {
 	duplicateList := make(map[string]bool)
 	fileDict := make(map[string][]map[string]interface{})
 	zeroLengthFiles := make([]string, 0)
@@ -52,7 +68,12 @@ func scanFiles(path string, options ScanOptions) (map[string][]map[string]interf
 
 		count++
 		if options.Detail > 0 && count%options.Detail == 0 {
-			log.Printf("Processed %d files.\t%s\r", count, filepath.Dir(filePath))
+			if totalCount > 0 {
+				percentComplete := float64(count) / float64(totalCount) * 100
+				log.Printf("Processed %d of %d files (%.2f%%).\t%s\r", count, totalCount, percentComplete, filepath.Dir(filePath))
+			} else {
+				log.Printf("Processed %d files.\t%s\r", count, filepath.Dir(filePath))
+			}
 		}
 
 		fileSize := info.Size()
@@ -141,6 +162,24 @@ func getMD5Hash(filePath string) (string, error) {
 	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
+func countFiles(path string, detail int) (int, error) {
+	count := 0
+	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.Mode().IsRegular() {
+			count++
+			if detail > 0 && count%detail == 0 {
+				fmt.Printf("Counted %d files in %s.\r", count, filepath.Dir(filePath))
+			}
+		}
+		return nil
+	})
+	return count, err
+}
+
 func main() {
 	startTime := time.Now()
 
@@ -149,8 +188,19 @@ func main() {
 	maxMB := flag.Int("maxmb", 0, "Set the maximum file size in megabytes (default 0 for no limit)")
 	maxQueueLength := flag.Int("maxQueueLength", 5, "Set the maximum number of concurrent MD5 calculations")
 	path := flag.String("path", ".", "Set the path to scan (default current directory)")
+	precount := flag.Bool("precount", false, "Pre-count the total number of files before scanning")
 
 	flag.Parse()
+
+	var totalCount int
+	if *precount {
+		var err error
+		totalCount, err = countFiles(*path, *detail)
+		if err != nil {
+			log.Fatalf("Error counting files: %s\n", err.Error())
+		}
+		fmt.Printf("Total number of files to scan: %d\n", totalCount)
+	}
 
 	options := ScanOptions{
 		MaxMB:          *maxMB,
@@ -158,7 +208,7 @@ func main() {
 		MaxQueueLength: *maxQueueLength,
 	}
 
-	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(*path, options)
+	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(*path, options, totalCount)
 
 	for dupe := range duplicateList {
 		fmt.Printf("Duplicate files found for %s:\n", dupe)
