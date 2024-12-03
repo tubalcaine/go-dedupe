@@ -1,3 +1,5 @@
+package main
+
 // Package main implements a command line tool to identify duplicate files based on
 // size and MD5 hash value. It provides options to limit the maximum file size for
 // MD5 calculation and the frequency of status messages.
@@ -14,7 +16,6 @@
 // The main function parses command line flags, sets up scan options, and initiates
 // the file scanning process. It prints the results, including duplicate files,
 // zero-length files, and oversized files, and displays the total run time.
-package main
 
 import (
 	"crypto/md5"
