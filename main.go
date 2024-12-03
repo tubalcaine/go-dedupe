@@ -109,10 +109,12 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 			if err != nil {
 				log.Printf("\nError processing file: %s\n", filePath)
 				log.Printf("Exception: %s\n", err.Error())
-				return
+				//
+				fileHash = "00000000000000000000000000000000"
 			}
 
 			elapsedTime := time.Since(startTime)
+
 			if fileSize > 4*1024*1024*1024 {
 				log.Printf("File processed in %s\n\n", elapsedTime)
 			}
@@ -127,11 +129,14 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 
 			mu.Lock()
 			defer mu.Unlock()
-			if _, ok := fileDict[key]; ok {
-				fileDict[key] = append(fileDict[key], fileInfo)
-				duplicateList[key] = true
-			} else {
-				fileDict[key] = []map[string]interface{}{fileInfo}
+
+			if fileHash != "00000000000000000000000000000000" {
+				if _, ok := fileDict[key]; ok {
+					fileDict[key] = append(fileDict[key], fileInfo)
+					duplicateList[key] = true
+				} else {
+					fileDict[key] = []map[string]interface{}{fileInfo}
+				}
 			}
 		}(filePath, fileSize)
 
