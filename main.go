@@ -172,7 +172,7 @@ func countFiles(path string, detail int) (int, error) {
 		if info.Mode().IsRegular() {
 			count++
 			if detail > 0 && count%detail == 0 {
-				fmt.Printf("Counted %d files in %s.\n", count, filepath.Dir(filePath))
+				log.Printf("Counted %d files in %s.\n", count, filepath.Dir(filePath))
 			}
 		}
 		return nil
