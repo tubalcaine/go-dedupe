@@ -25,24 +25,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 )
 
-/*
-dedup.go
-
-A command line tool to identify duplicate files based on
-size and md5 hash value.
-*/
-
-// ScanOptions defines the max file size to calculate the MD5 hash
-// and the frequency to print a status message. Default max is "0"
-// for no limit and default detail is "77" files.
 type ScanOptions struct {
 	MaxMB          int
 	Detail         int
 	MaxQueueLength int
+	RegExes        []*regexp.Regexp
 }
 
 func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]map[string]interface{}, map[string]bool, []string, []string) {
@@ -65,6 +57,19 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 
 		if !info.Mode().IsRegular() {
 			return nil
+		}
+
+		if len(options.RegExes) > 0 {
+			matched := false
+			for _, re := range options.RegExes {
+				if re.MatchString(filepath.Base(filePath)) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return nil
+			}
 		}
 
 		count++
@@ -168,17 +173,38 @@ func getMD5Hash(filePath string) (string, error) {
 	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
-func countFiles(path string, detail int) (int, error) {
+func countFiles(path string, options ScanOptions) (int, error) {
 	count := 0
+	detail := options.Detail
+	regexpList := options.RegExes
+	totalCount := 0
+
 	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
+		// Make errors non-fatal in counting mode
 		if err != nil {
-			return err
+			log.Printf("Error accessing file: %s\nError: %s\n", filePath, err.Error())
+			//			return err
+			return nil
 		}
 
 		if info.Mode().IsRegular() {
-			count++
-			if detail > 0 && count%detail == 0 {
-				log.Printf("Counted %d files in %s.\n", count, filepath.Dir(filePath))
+			totalCount++
+			if len(regexpList) > 0 {
+				for _, re := range regexpList {
+					if re.MatchString(filepath.Base(filePath)) {
+						count++
+					}
+
+					if detail > 0 && count%detail == 0 {
+						log.Printf("Counted %d files of which %d matched a regex.\n Currently in dir %s.\n",
+							totalCount, count, filepath.Dir(filePath))
+					}
+				}
+			} else {
+				count++
+				if detail > 0 && count%detail == 0 {
+					log.Printf("Counted %d files in %s.\n", count, filepath.Dir(filePath))
+				}
 			}
 		}
 		return nil
@@ -196,22 +222,40 @@ func main() {
 	path := flag.String("path", ".", "Set the path to scan (default current directory)")
 	precount := flag.Bool("precount", false, "Pre-count the total number of files before scanning")
 
+	var regexList []string
+
+	flag.Func("regex", "Set a regular expression to filter files (can be used multiple times)", func(s string) error {
+		regexList = append(regexList, s)
+		return nil
+	})
+
 	flag.Parse()
 
-	var totalCount int
-	if *precount {
-		var err error
-		totalCount, err = countFiles(*path, *detail)
+	var compiledRegexes []*regexp.Regexp
+	for _, r := range regexList {
+		compiledRegex, err := regexp.Compile(r)
 		if err != nil {
-			log.Fatalf("Error counting files: %s\n", err.Error())
+			log.Fatalf("Error compiling regex: %s\n", err.Error())
 		}
-		fmt.Printf("Total number of files to scan: %d\n", totalCount)
+		compiledRegexes = append(compiledRegexes, compiledRegex)
 	}
+
+	var totalCount int
 
 	options := ScanOptions{
 		MaxMB:          *maxMB,
 		Detail:         *detail,
 		MaxQueueLength: *maxQueueLength,
+		RegExes:        compiledRegexes,
+	}
+
+	if *precount {
+		var err error
+		totalCount, err = countFiles(*path, options)
+		if err != nil {
+			log.Fatalf("Error counting files: %s\n", err.Error())
+		}
+		fmt.Printf("Total number of files to scan: %d\n", totalCount)
 	}
 
 	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(*path, options, totalCount)
