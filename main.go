@@ -195,14 +195,14 @@ func countFiles(path string, options ScanOptions) (int, error) {
 						count++
 					}
 
-					if detail > 0 && count%detail == 0 {
+					if detail > 0 && totalCount%detail == 0 {
 						log.Printf("Counted %d files of which %d matched a regex.\n Currently in dir %s.\n",
 							totalCount, count, filepath.Dir(filePath))
 					}
 				}
 			} else {
 				count++
-				if detail > 0 && count%detail == 0 {
+				if detail > 0 && totalCount%detail == 0 {
 					log.Printf("Counted %d files in %s.\n", count, filepath.Dir(filePath))
 				}
 			}
