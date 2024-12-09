@@ -19,6 +19,7 @@ package main
 
 import (
 	"crypto/md5"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -219,6 +220,7 @@ func main() {
 	maxQueueLength := flag.Int("maxQueueLength", 5, "Set the maximum number of concurrent MD5 calculations")
 	path := flag.String("path", ".", "Set the path to scan (default current directory)")
 	precount := flag.Bool("precount", false, "Pre-count the total number of files before scanning")
+	jsonOutput := flag.String("json", "", "Set the file path to save the scan results in JSON format")
 
 	var regexList []string
 
@@ -226,7 +228,6 @@ func main() {
 		regexList = append(regexList, s)
 		return nil
 	})
-
 	flag.Parse()
 
 	var compiledRegexes []*regexp.Regexp
@@ -257,6 +258,26 @@ func main() {
 	}
 
 	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(*path, options, totalCount)
+	if *jsonOutput != "" {
+		output := map[string]interface{}{
+			"duplicateList":   duplicateList,
+			"zeroLengthFiles": zeroLengthFiles,
+			"oversizeFiles":   oversizeFiles,
+			"maxMB":           *maxMB,
+		}
+
+		file, err := os.Create(*jsonOutput)
+		if err != nil {
+			log.Fatalf("Error creating JSON output file: %s\n", err.Error())
+		}
+		defer file.Close()
+
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(output); err != nil {
+			log.Fatalf("Error encoding JSON output: %s\n", err.Error())
+		}
+	}
 
 	for dupe := range duplicateList {
 		fmt.Printf("Duplicate files found for %s:\n", dupe)
