@@ -260,6 +260,7 @@ func main() {
 	fileDict, duplicateList, zeroLengthFiles, oversizeFiles := scanFiles(*path, options, totalCount)
 	if *jsonOutput != "" {
 		output := map[string]interface{}{
+			"fileDict":        fileDict,
 			"duplicateList":   duplicateList,
 			"zeroLengthFiles": zeroLengthFiles,
 			"oversizeFiles":   oversizeFiles,
