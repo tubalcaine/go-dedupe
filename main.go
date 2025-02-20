@@ -106,7 +106,7 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 		wg.Add(1)
 		md5Queue <- struct{}{} // Add to the queue
 
-		go func(filePath string, fileSize int64) {
+		go func(filePath string, fileSize int64, modTime time.Time) {
 			defer wg.Done()
 			defer func() { <-md5Queue }() // Remove from the queue
 
@@ -132,6 +132,7 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 				"size":     fileSize,
 				"md5_hash": fileHash,
 				"key":      key,
+				"mtime":    modTime,
 			}
 
 			mu.Lock()
@@ -145,7 +146,7 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 					fileDict[key] = []map[string]interface{}{fileInfo}
 				}
 			}
-		}(filePath, fileSize)
+		}(filePath, fileSize, info.ModTime())
 
 		return nil
 	})
@@ -221,6 +222,7 @@ func main() {
 	path := flag.String("path", ".", "Set the path to scan")
 	precount := flag.Bool("precount", false, "Pre-count the total number of files before scanning")
 	jsonOutput := flag.String("json", "", "Set the file path to save the scan results in JSON format")
+	uniqFilesPath := flag.String("uniqFilesPath", "", "Set the dir/folder to save one unique file of each set of duplicates")
 
 	var regexList []string
 
@@ -228,7 +230,14 @@ func main() {
 		regexList = append(regexList, s)
 		return nil
 	})
+
 	flag.Parse()
+	if *uniqFilesPath != "" {
+		err := os.MkdirAll(*uniqFilesPath, os.ModePerm)
+		if err != nil {
+			log.Fatalf("Error creating unique files path: %s\n", err.Error())
+		}
+	}
 
 	var compiledRegexes []*regexp.Regexp
 	for _, r := range regexList {
@@ -282,8 +291,53 @@ func main() {
 
 	for dupe := range duplicateList {
 		fmt.Printf("Duplicate files found for %s:\n", dupe)
-		for _, file := range fileDict[dupe] {
-			fmt.Printf("  %s\n", file["name"])
+		dupeFiles := fileDict[dupe]
+		if len(dupeFiles) > 0 {
+			// Find the file with the latest modification time
+			var latestFile map[string]interface{}
+			for _, file := range dupeFiles {
+				if latestFile == nil || file["mtime"].(time.Time).After(latestFile["mtime"].(time.Time)) {
+					latestFile = file
+				}
+			}
+			firstFile := latestFile["name"].(string)
+			uniqFilePath := filepath.Join(*uniqFilesPath, filepath.Base(firstFile))
+
+			// Copy the file with the latest modification time to the unique file path
+			input, err := os.Open(firstFile)
+			if err != nil {
+				log.Printf("Error opening file %s: %s\n", firstFile, err.Error())
+				continue
+			}
+			defer input.Close()
+
+			output, err := os.Create(uniqFilePath)
+			if err != nil {
+				log.Printf("Error creating file %s: %s\n", uniqFilePath, err.Error())
+				continue
+			}
+			defer output.Close()
+
+			_, err = io.Copy(output, input)
+			if err != nil {
+				log.Printf("Error copying file %s to %s: %s\n", firstFile, uniqFilePath, err.Error())
+				continue
+			}
+
+			// Create the duplicate list file
+			dupListFilePath := uniqFilePath + "-dup-list.txt"
+			dupListFile, err := os.Create(dupListFilePath)
+			if err != nil {
+				log.Printf("Error creating duplicate list file %s: %s\n", dupListFilePath, err.Error())
+				continue
+			}
+			defer dupListFile.Close()
+
+			for _, file := range dupeFiles {
+				if file["name"].(string) != firstFile {
+					fmt.Fprintf(dupListFile, "%s\n", file["name"].(string))
+				}
+			}
 		}
 	}
 
