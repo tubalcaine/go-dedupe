@@ -215,10 +215,10 @@ func main() {
 	startTime := time.Now()
 
 	// Define command line flags
-	detail := flag.Int("detail", 77, "Set how often to print a status message (default 77 files)")
+	detail := flag.Int("detail", 77, "Set how often to print a status message")
 	maxMB := flag.Int("maxmb", 0, "Set the maximum file size in megabytes (default 0 for no limit)")
 	maxQueueLength := flag.Int("maxQueueLength", 5, "Set the maximum number of concurrent MD5 calculations")
-	path := flag.String("path", ".", "Set the path to scan (default current directory)")
+	path := flag.String("path", ".", "Set the path to scan")
 	precount := flag.Bool("precount", false, "Pre-count the total number of files before scanning")
 	jsonOutput := flag.String("json", "", "Set the file path to save the scan results in JSON format")
 
