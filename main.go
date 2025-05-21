@@ -38,16 +38,127 @@ type ScanOptions struct {
 	RegExes        []*regexp.Regexp
 }
 
+// matchesRegexFilters checks if a file matches any of the provided regex filters
+// If no filters are provided, it returns true
+func matchesRegexFilters(filename string, regexes []*regexp.Regexp) bool {
+	if len(regexes) == 0 {
+		return true
+	}
+	
+	for _, re := range regexes {
+		if re.MatchString(filepath.Base(filename)) {
+			return true
+		}
+	}
+	return false
+}
+
+// getUniqueFilePath returns a unique file path by adding a numeric suffix if needed
+func getUniqueFilePath(basePath string) string {
+	if _, err := os.Stat(basePath); os.IsNotExist(err) {
+		// Path doesn't exist, it's already unique
+		return basePath
+	}
+	
+	// Path exists, need to create a unique name
+	ext := filepath.Ext(basePath)
+	nameWithoutExt := basePath[:len(basePath)-len(ext)]
+	
+	// Try adding numeric suffixes until we find a unique name
+	counter := 1
+	for {
+		newPath := fmt.Sprintf("%s_%d%s", nameWithoutExt, counter, ext)
+		if _, err := os.Stat(newPath); os.IsNotExist(err) {
+			return newPath
+		}
+		counter++
+	}
+}
+
+// copyFile copies a file from src to dst and properly cleans up resources
+func copyFile(src, dst string) error {
+	// Open the source file
+	input, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("error opening source file %s: %w", src, err)
+	}
+	defer input.Close() // This will close when the function returns
+	
+	// Create the destination file
+	output, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("error creating destination file %s: %w", dst, err)
+	}
+	defer output.Close() // This will close when the function returns
+	
+	// Create buffered readers/writers for improved performance
+	const bufferSize = 4 * 1024 * 1024 // 4MB buffer
+	buf := make([]byte, bufferSize)
+	
+	// Copy the file contents in chunks
+	for {
+		n, err := input.Read(buf)
+		if n > 0 {
+			if _, err := output.Write(buf[:n]); err != nil {
+				return fmt.Errorf("error writing to destination file %s: %w", dst, err)
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("error reading from source file %s: %w", src, err)
+		}
+	}
+	
+	return nil
+}
+
+// writeDuplicateList writes a list of duplicate files to the specified path, excluding the original file
+func writeDuplicateList(files []map[string]interface{}, originalFile, listPath string) error {
+	// Handle path collisions by creating a unique file path
+	uniqueListPath := getUniqueFilePath(listPath)
+	
+	// Create the duplicate list file
+	dupListFile, err := os.Create(uniqueListPath)
+	if err != nil {
+		return fmt.Errorf("error creating duplicate list file %s: %w", uniqueListPath, err)
+	}
+	defer dupListFile.Close() // This will close when the function returns
+	
+	// Write all duplicate files except the original to the list
+	for _, file := range files {
+		if file["name"].(string) != originalFile {
+			fmt.Fprintf(dupListFile, "%s\n", file["name"].(string))
+		}
+	}
+	
+	// Log if we had to use a different path
+	if uniqueListPath != listPath {
+		log.Printf("Duplicate list file already exists, created %s instead\n", uniqueListPath)
+	}
+	
+	return nil
+}
+
 func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]map[string]interface{}, map[string]bool, []string, []string) {
 	duplicateList := make(map[string]bool)
 	fileDict := make(map[string][]map[string]interface{})
-	zeroLengthFiles := make([]string, 0)
-	largeFiles := make([]string, 0)
+	zeroLengthFiles := make([]string, 0, 100)  // Pre-allocate capacity
+	largeFiles := make([]string, 0, 100)       // Pre-allocate capacity
 
 	count := 0
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	md5Queue := make(chan struct{}, options.MaxQueueLength)
+
+	// Create a buffer pool to reduce GC pressure
+	bufferPool := sync.Pool{
+		New: func() interface{} {
+			// 4MB buffer for file reads
+			return make([]byte, 4*1024*1024)
+		},
+	}
 
 	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -60,17 +171,8 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 			return nil
 		}
 
-		if len(options.RegExes) > 0 {
-			matched := false
-			for _, re := range options.RegExes {
-				if re.MatchString(filepath.Base(filePath)) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return nil
-			}
+		if !matchesRegexFilters(filePath, options.RegExes) {
+			return nil
 		}
 
 		count++
@@ -87,14 +189,18 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 
 		// Skip empty files
 		if fileSize == 0 {
+			mu.Lock()
 			zeroLengthFiles = append(zeroLengthFiles, filePath)
+			mu.Unlock()
 			return nil
 		}
 
 		// Skip large files
 		if int64(options.MaxMB) > 0 && fileSize > int64(options.MaxMB)*1024*1024 {
 			log.Printf("Skipping VERY large %.2fMB file: %s\n", float64(fileSize)/(1024*1024), filePath)
+			mu.Lock()
 			largeFiles = append(largeFiles, filePath)
+			mu.Unlock()
 			return nil
 		}
 
@@ -112,12 +218,43 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 
 			startTime := time.Now()
 
-			fileHash, err := getMD5Hash(filePath)
+			// Use custom MD5 calculation with buffer from pool
+			file, err := os.Open(filePath)
+			var fileHash string
+			
 			if err != nil {
-				log.Printf("\nError processing file: %s\n", filePath)
+				log.Printf("\nError opening file: %s\n", filePath)
 				log.Printf("Exception: %s\n", err.Error())
-				//
 				fileHash = "00000000000000000000000000000000"
+			} else {
+				defer file.Close()
+				
+				// Get a buffer from the pool
+				buf := bufferPool.Get().([]byte)
+				defer bufferPool.Put(buf) // Return the buffer to the pool
+				
+				hash := md5.New()
+				
+				// Read file in chunks
+				for {
+					n, err := file.Read(buf)
+					if n > 0 {
+						hash.Write(buf[:n])
+					}
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						log.Printf("\nError reading file: %s\n", filePath)
+						log.Printf("Exception: %s\n", err.Error())
+						fileHash = "00000000000000000000000000000000"
+						break
+					}
+				}
+				
+				if fileHash == "" {
+					fileHash = fmt.Sprintf("%x", hash.Sum(nil))
+				}
 			}
 
 			elapsedTime := time.Since(startTime)
@@ -160,25 +297,9 @@ func scanFiles(path string, options ScanOptions, totalCount int) (map[string][]m
 	return fileDict, duplicateList, zeroLengthFiles, largeFiles
 }
 
-func getMD5Hash(filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hash := md5.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("%x", hash.Sum(nil)), nil
-}
-
 func countFiles(path string, options ScanOptions) (int, error) {
 	count := 0
 	detail := options.Detail
-	regexpList := options.RegExes
 	totalCount := 0
 
 	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
@@ -197,13 +318,7 @@ func countFiles(path string, options ScanOptions) (int, error) {
 					totalCount, count, filepath.Dir(filePath))
 			}
 
-			if len(regexpList) > 0 {
-				for _, re := range regexpList {
-					if re.MatchString(filepath.Base(filePath)) {
-						count++
-					}
-				}
-			} else {
+			if matchesRegexFilters(filePath, options.RegExes) {
 				count++
 			}
 		}
@@ -301,42 +416,27 @@ func main() {
 				}
 			}
 			firstFile := latestFile["name"].(string)
-			uniqFilePath := filepath.Join(*uniqFilesPath, filepath.Base(firstFile))
+			baseDstPath := filepath.Join(*uniqFilesPath, filepath.Base(firstFile))
+			
+			// Handle file name collisions
+			uniqFilePath := getUniqueFilePath(baseDstPath)
+			
+			// Log if we had to use a different path than expected
+			if uniqFilePath != baseDstPath {
+				log.Printf("File %s already exists, using %s instead\n", 
+					filepath.Base(baseDstPath), filepath.Base(uniqFilePath))
+			}
 
 			// Copy the file with the latest modification time to the unique file path
-			input, err := os.Open(firstFile)
-			if err != nil {
-				log.Printf("Error opening file %s: %s\n", firstFile, err.Error())
-				continue
-			}
-			defer input.Close()
-
-			output, err := os.Create(uniqFilePath)
-			if err != nil {
-				log.Printf("Error creating file %s: %s\n", uniqFilePath, err.Error())
-				continue
-			}
-			defer output.Close()
-
-			_, err = io.Copy(output, input)
-			if err != nil {
-				log.Printf("Error copying file %s to %s: %s\n", firstFile, uniqFilePath, err.Error())
+			if err := copyFile(firstFile, uniqFilePath); err != nil {
+				log.Printf("%s\n", err)
 				continue
 			}
 
 			// Create the duplicate list file
 			dupListFilePath := uniqFilePath + "-dup-list.txt"
-			dupListFile, err := os.Create(dupListFilePath)
-			if err != nil {
-				log.Printf("Error creating duplicate list file %s: %s\n", dupListFilePath, err.Error())
-				continue
-			}
-			defer dupListFile.Close()
-
-			for _, file := range dupeFiles {
-				if file["name"].(string) != firstFile {
-					fmt.Fprintf(dupListFile, "%s\n", file["name"].(string))
-				}
+			if err := writeDuplicateList(dupeFiles, firstFile, dupListFilePath); err != nil {
+				log.Printf("%s\n", err)
 			}
 		}
 	}
